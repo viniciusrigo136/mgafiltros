@@ -9,7 +9,7 @@ export const metadata: Metadata = { title: 'Modelos de trator' };
 export default async function Modelos({ searchParams }: { searchParams: SearchParams }) {
   const sp = await searchParams;
   const q = one(sp.q).trim();
-  const models = listModels(q);
+  const models = await listModels(q);
   return (
     <>
       <Flash ok={one(sp.ok)} erro={one(sp.erro)} />

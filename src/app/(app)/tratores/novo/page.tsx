@@ -11,8 +11,8 @@ export default async function NovoTrator({ searchParams }: { searchParams: Searc
   const sp = await searchParams;
   const ownerId = Number(one(sp.proprietario)) || undefined;
   const modelId = Number(one(sp.modelo)) || 0;
-  const template = modelId ? getModel(modelId) : null;
-  const models = listModels();
+  const template = modelId ? await getModel(modelId) : null;
+  const models = await listModels();
 
   return (
     <>
@@ -37,7 +37,7 @@ export default async function NovoTrator({ searchParams }: { searchParams: Searc
       <section className="card">
         <TractorForm
           key={modelId}
-          owners={listOwnerOptions()}
+          owners={await listOwnerOptions()}
           defaultOwnerId={ownerId}
           defaults={template ?? undefined}
           filters={template?.filters ?? []}

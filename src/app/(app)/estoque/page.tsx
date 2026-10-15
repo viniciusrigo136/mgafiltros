@@ -13,7 +13,7 @@ export default async function Estoque({ searchParams }: { searchParams: SearchPa
   const kind = one(sp.tipo);
   const low = one(sp.baixo) === '1';
   const inativos = one(sp.inativos) === '1';
-  const items = listStock({ q, kind, low, includeInactive: inativos });
+  const items = await listStock({ q, kind, low, includeInactive: inativos });
   const value = items.reduce((s, i) => s + Math.max(0, i.balance) * (i.cost_price ?? 0), 0);
 
   return (

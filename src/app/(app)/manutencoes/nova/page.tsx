@@ -15,11 +15,11 @@ export default async function NovaTroca({ searchParams }: { searchParams: Search
   const [user, sp] = await Promise.all([requireUser(), searchParams]);
   const tractorId = Number(one(sp.trator)) || 0;
   const workOrderId = Number(one(sp.os)) || 0;
-  const t = tractorId ? getTractor(tractorId) : null;
+  const t = tractorId ? await getTractor(tractorId) : null;
   const today = todayInTimeZone();
 
   if (!t) {
-    const options = listTractorOptions();
+    const options = await listTractorOptions();
     return (
       <>
         <PageHead title="Registrar troca de óleo" back={{ href: '/manutencoes', label: 'Manutenções' }} />
@@ -44,7 +44,7 @@ export default async function NovaTroca({ searchParams }: { searchParams: Search
     );
   }
 
-  const filters = getTractorFilters(t.id);
+  const filters = await getTractorFilters(t.id);
   return (
     <>
       <PageHead title={`Troca de óleo — trator nº ${t.sequential_number}`} back={{ href: `/tratores/${t.id}`, label: 'Ficha do trator' }} />

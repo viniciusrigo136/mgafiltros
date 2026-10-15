@@ -4,7 +4,7 @@ import { OwnerForm } from '@/components/OwnerForm';
 import { PageHead } from '@/components/ui';
 
 export default async function EditarProprietario({ params }: { params: Promise<{ id: string }> }) {
-  const owner = getOwner(Number((await params).id));
+  const owner = await getOwner(Number((await params).id));
   if (!owner) notFound();
   return (
     <>

@@ -12,7 +12,7 @@ export default async function Ordens({ searchParams }: { searchParams: SearchPar
   const q = one(sp.q).trim();
   const status = one(sp.situacao);
   const abertas = one(sp.abertas) === '1';
-  const orders = listOrders({ q, status, open: abertas && !status });
+  const orders = await listOrders({ q, status, open: abertas && !status });
 
   return (
     <>

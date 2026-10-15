@@ -35,8 +35,8 @@ export default async function Manutencoes({ searchParams }: { searchParams: Sear
   );
 }
 
-function OilTab({ q }: { q: string }) {
-  const changes = listOilChanges({ q, limit: 200 });
+async function OilTab({ q }: { q: string }) {
+  const changes = await listOilChanges({ q, limit: 200 });
   return (
     <section className="card">
       <OilChangeList changes={changes} showTractor />
@@ -45,12 +45,15 @@ function OilTab({ q }: { q: string }) {
   );
 }
 
-function OtherTab({ q, typeId }: { q: string; typeId?: number }) {
-  const plans = listPlans({ activeOnly: true })
+async function OtherTab({ q, typeId }: { q: string; typeId?: number }) {
+  const [allPlans, records, types] = await Promise.all([
+    listPlans({ activeOnly: true }),
+    listRecords({ q, typeId, limit: 200 }),
+    listMaintenanceTypes(),
+  ]);
+  const plans = allPlans
     .filter((p) => p.st.status !== 'em_dia' && (!typeId || p.type_id === typeId))
     .sort((a, b) => compareUrgency(a.st, b.st));
-  const records = listRecords({ q, typeId, limit: 200 });
-  const types = listMaintenanceTypes();
   return (
     <>
       <div className="toolbar">

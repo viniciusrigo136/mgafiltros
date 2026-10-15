@@ -9,7 +9,7 @@ import { Flash, PageHead, one, type SearchParams } from '@/components/ui';
 
 export default async function Modelo({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
   const [{ id }, sp, user] = await Promise.all([params, searchParams, requireUser()]);
-  const model = getModel(Number(id));
+  const model = await getModel(Number(id));
   if (!model) notFound();
   return (
     <>

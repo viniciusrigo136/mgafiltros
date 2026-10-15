@@ -12,9 +12,9 @@ import { Flash, PageHead, one, type SearchParams } from '@/components/ui';
 
 export default async function ItemEstoque({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
   const [{ id }, sp, user] = await Promise.all([params, searchParams, requireUser()]);
-  const item = getStockItem(Number(id));
+  const item = await getStockItem(Number(id));
   if (!item) notFound();
-  const movements = listMovements(item.id);
+  const movements = await listMovements(item.id);
   const editable = canEdit(user);
   const isLow = item.min_quantity > 0 && item.balance <= item.min_quantity;
 

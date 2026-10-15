@@ -100,13 +100,13 @@ interface StatusContext { today: string; thresholds: Thresholds; readings: Map<n
 type ReadingPoint = { hours: number; read_at: string; is_correction: number };
 
 /** Leituras do último ano por trator, descartando as anteriores à última correção (troca de horímetro). */
-function loadReadings(today: string, tractorId?: number): Map<number, ReadingPoint[]> {
-  const rows = getDb()
-    .prepare(
-      `SELECT tractor_id, hours, read_at, is_correction FROM hour_readings
-       WHERE read_at >= ? ${tractorId ? 'AND tractor_id = ?' : ''} ORDER BY tractor_id, read_at, id`,
-    )
-    .all(...(tractorId ? [addDays(today, -365), tractorId] : [addDays(today, -365)])) as (ReadingPoint & { tractor_id: number })[];
+async function loadReadings(today: string, tractorId?: number): Promise<Map<number, ReadingPoint[]>> {
+  const db = await getDb();
+  const rows = await db.all<ReadingPoint & { tractor_id: number }>(
+    `SELECT tractor_id, hours, read_at, is_correction FROM hour_readings
+     WHERE read_at >= ? ${tractorId ? 'AND tractor_id = ?' : ''} ORDER BY tractor_id, read_at, id`,
+    ...(tractorId ? [addDays(today, -365), tractorId] : [addDays(today, -365)]),
+  );
   const map = new Map<number, ReadingPoint[]>();
   for (const r of rows) {
     let list = map.get(r.tractor_id);
@@ -117,9 +117,10 @@ function loadReadings(today: string, tractorId?: number): Map<number, ReadingPoi
   return map;
 }
 
-function statusContext(tractorId?: number): StatusContext {
+async function statusContext(tractorId?: number): Promise<StatusContext> {
   const today = todayInTimeZone();
-  return { today, thresholds: getSettings().thresholds, readings: loadReadings(today, tractorId) };
+  const [settings, readings] = await Promise.all([getSettings(), loadReadings(today, tractorId)]);
+  return { today, thresholds: settings.thresholds, readings };
 }
 
 export function withStatus(t: Tractor, ctx: StatusContext): TractorWithStatus {
@@ -140,7 +141,7 @@ function likeParam(q: string) {
   return `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
-export function listOwners(opts: { q?: string; includeInactive?: boolean } = {}): Owner[] {
+export async function listOwners(opts: { q?: string; includeInactive?: boolean } = {}): Promise<Owner[]> {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (!opts.includeInactive) where.push('o.is_active = 1');
@@ -150,24 +151,24 @@ export function listOwners(opts: { q?: string; includeInactive?: boolean } = {})
     params.push(likeParam(opts.q), likeParam(opts.q));
     if (digits.length >= 4) params.push(`%${digits}%`);
   }
-  return getDb()
-    .prepare(
-      `SELECT o.*, (SELECT count(*) FROM tractors t WHERE t.owner_id = o.id AND t.is_active = 1) AS tractor_count
-       FROM owners o ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY o.is_active DESC, o.name COLLATE NOCASE`,
-    )
-    .all(...params) as unknown as Owner[];
+  return (await getDb()).all<Owner>(
+    `SELECT o.*, (SELECT count(*) FROM tractors t WHERE t.owner_id = o.id AND t.is_active = 1) AS tractor_count
+     FROM owners o ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY o.is_active DESC, o.name COLLATE NOCASE`,
+    ...params,
+  );
 }
 
-export function getOwner(id: number): Owner | null {
-  return (getDb()
-    .prepare(`SELECT o.*, (SELECT count(*) FROM tractors t WHERE t.owner_id = o.id) AS tractor_count FROM owners o WHERE o.id = ?`)
-    .get(id) as unknown as Owner | undefined) ?? null;
+export async function getOwner(id: number): Promise<Owner | null> {
+  return (await (await getDb()).get<Owner>(
+    'SELECT o.*, (SELECT count(*) FROM tractors t WHERE t.owner_id = o.id) AS tractor_count FROM owners o WHERE o.id = ?',
+    id,
+  )) ?? null;
 }
 
-export function listTractors(
+export async function listTractors(
   opts: { q?: string; status?: MaintenanceStatus | ''; ownerId?: number; includeInactive?: boolean } = {},
-): TractorWithStatus[] {
+): Promise<TractorWithStatus[]> {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (!opts.includeInactive) where.push('t.is_active = 1');
@@ -190,10 +191,11 @@ export function listTractors(
     }
     where.push(`(${parts.join(' OR ')})`);
   }
-  const rows = getDb()
-    .prepare(`${TRACTOR_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY t.sequential_number`)
-    .all(...params) as unknown as Tractor[];
-  const ctx = statusContext();
+  const db = await getDb();
+  const [rows, ctx] = await Promise.all([
+    db.all<Tractor>(`${TRACTOR_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY t.sequential_number`, ...params),
+    statusContext(),
+  ]);
   let list = rows.map((t) => withStatus(t, ctx));
   if (opts.status) list = list.filter((t) => t.st.status === opts.status);
   return list;
@@ -203,23 +205,22 @@ export function sortByUrgency(list: TractorWithStatus[]): TractorWithStatus[] {
   return [...list].sort((a, b) => compareUrgency(a.st, b.st) || a.sequential_number - b.sequential_number);
 }
 
-export function getTractor(id: number): TractorWithStatus | null {
-  const t = getDb().prepare(`${TRACTOR_SELECT} WHERE t.id = ?`).get(id) as unknown as Tractor | undefined;
-  return t ? withStatus(t, statusContext(id)) : null;
+export async function getTractor(id: number): Promise<TractorWithStatus | null> {
+  const db = await getDb();
+  const [t, ctx] = await Promise.all([db.get<Tractor>(`${TRACTOR_SELECT} WHERE t.id = ?`, id), statusContext(id)]);
+  return t ? withStatus(t, ctx) : null;
 }
 
-export function findTractorIdByNumber(n: number): number | null {
-  const row = getDb().prepare('SELECT id FROM tractors WHERE sequential_number = ?').get(n) as { id: number } | undefined;
+export async function findTractorIdByNumber(n: number): Promise<number | null> {
+  const row = await (await getDb()).get<{ id: number }>('SELECT id FROM tractors WHERE sequential_number = ?', n);
   return row?.id ?? null;
 }
 
-export function getTractorFilters(tractorId: number): TractorFilter[] {
-  return getDb()
-    .prepare('SELECT * FROM tractor_filters WHERE tractor_id = ? ORDER BY id')
-    .all(tractorId) as unknown as TractorFilter[];
+export async function getTractorFilters(tractorId: number): Promise<TractorFilter[]> {
+  return (await getDb()).all<TractorFilter>('SELECT * FROM tractor_filters WHERE tractor_id = ? ORDER BY id', tractorId);
 }
 
-export function listOilChanges(opts: { tractorId?: number; ownerId?: number; q?: string; limit?: number } = {}): OilChange[] {
+export async function listOilChanges(opts: { tractorId?: number; ownerId?: number; q?: string; limit?: number } = {}): Promise<OilChange[]> {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (opts.tractorId) { where.push('c.tractor_id = ?'); params.push(opts.tractorId); }
@@ -235,35 +236,39 @@ export function listOilChanges(opts: { tractorId?: number; ownerId?: number; q?:
       params.push(like, like, like, like);
     }
   }
-  const db = getDb();
-  const changes = db
-    .prepare(
-      `SELECT c.*, t.sequential_number, t.brand, t.model, t.owner_id, o.name AS owner_name, u.name AS created_by_name
-       FROM oil_changes c
-       JOIN tractors t ON t.id = c.tractor_id
-       JOIN owners o ON o.id = t.owner_id
-       LEFT JOIN users u ON u.id = c.created_by
-       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY c.serviced_at DESC, c.service_hours DESC, c.id DESC
-       LIMIT ${Math.min(opts.limit ?? 200, 500)}`,
-    )
-    .all(...params) as unknown as OilChange[];
+  const db = await getDb();
+  const changes = await db.all<OilChange>(
+    `SELECT c.*, t.sequential_number, t.brand, t.model, t.owner_id, o.name AS owner_name, u.name AS created_by_name
+     FROM oil_changes c
+     JOIN tractors t ON t.id = c.tractor_id
+     JOIN owners o ON o.id = t.owner_id
+     LEFT JOIN users u ON u.id = c.created_by
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY c.serviced_at DESC, c.service_hours DESC, c.id DESC
+     LIMIT ${Math.min(opts.limit ?? 200, 500)}`,
+    ...params,
+  );
   if (!changes.length) return changes;
-  const filters = db
-    .prepare(`SELECT * FROM oil_change_filters WHERE oil_change_id IN (${changes.map(() => '?').join(',')}) ORDER BY id`)
-    .all(...changes.map((c) => c.id)) as unknown as (OilChange['filters'][number] & { oil_change_id: number })[];
-  for (const c of changes) c.filters = filters.filter((f) => f.oil_change_id === c.id);
+  const filters = await db.all<OilChange['filters'][number] & { oil_change_id: number }>(
+    `SELECT * FROM oil_change_filters WHERE oil_change_id IN (${changes.map(() => '?').join(',')}) ORDER BY id`,
+    ...changes.map((c) => c.id),
+  );
+  const byChange = new Map<number, OilChange['filters']>();
+  for (const f of filters) {
+    const list = byChange.get(f.oil_change_id) ?? [];
+    list.push(f);
+    byChange.set(f.oil_change_id, list);
+  }
+  for (const c of changes) c.filters = byChange.get(c.id) ?? [];
   return changes;
 }
 
-export function listHourReadings(tractorId: number, limit = 10): HourReading[] {
-  return getDb()
-    .prepare('SELECT * FROM hour_readings WHERE tractor_id = ? ORDER BY read_at DESC, id DESC LIMIT ?')
-    .all(tractorId, limit) as unknown as HourReading[];
+export async function listHourReadings(tractorId: number, limit = 10): Promise<HourReading[]> {
+  return (await getDb()).all<HourReading>('SELECT * FROM hour_readings WHERE tractor_id = ? ORDER BY read_at DESC, id DESC LIMIT ?', tractorId, limit);
 }
 
-export function dashboard() {
-  const all = listTractors();
+export async function dashboard() {
+  const all = await listTractors();
   const counts: Record<MaintenanceStatus, number> = { vencida: 0, proxima: 0, em_dia: 0, sem_dados: 0 };
   for (const t of all) counts[t.st.status]++;
   const attention = sortByUrgency(all.filter((t) => t.st.status !== 'em_dia'));
@@ -288,17 +293,13 @@ export function upcomingChanges(list: TractorWithStatus[]) {
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export function listOwnerOptions() {
-  return getDb()
-    .prepare('SELECT id, name FROM owners WHERE is_active = 1 ORDER BY name COLLATE NOCASE')
-    .all() as { id: number; name: string }[];
+export async function listOwnerOptions() {
+  return (await getDb()).all<{ id: number; name: string }>('SELECT id, name FROM owners WHERE is_active = 1 ORDER BY name COLLATE NOCASE');
 }
 
-export function listTractorOptions() {
-  return getDb()
-    .prepare(
-      `SELECT t.id, t.sequential_number, t.brand, t.model, o.name AS owner_name
-       FROM tractors t JOIN owners o ON o.id = t.owner_id WHERE t.is_active = 1 ORDER BY t.sequential_number`,
-    )
-    .all() as { id: number; sequential_number: number; brand: string; model: string; owner_name: string }[];
+export async function listTractorOptions() {
+  return (await getDb()).all<{ id: number; sequential_number: number; brand: string; model: string; owner_name: string }>(
+    `SELECT t.id, t.sequential_number, t.brand, t.model, o.name AS owner_name
+     FROM tractors t JOIN owners o ON o.id = t.owner_id WHERE t.is_active = 1 ORDER BY t.sequential_number`,
+  );
 }

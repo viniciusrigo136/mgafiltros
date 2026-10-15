@@ -9,8 +9,8 @@ export const metadata: Metadata = { title: 'Abrir OS' };
 
 export default async function NovaOrdem({ searchParams }: { searchParams: SearchParams }) {
   const tractorId = Number(one((await searchParams).trator)) || 0;
-  const t = tractorId ? getTractor(tractorId) : null;
-  const options = t ? [] : listTractorOptions();
+  const t = tractorId ? await getTractor(tractorId) : null;
+  const options = t ? [] : await listTractorOptions();
 
   return (
     <>

@@ -22,19 +22,23 @@ import { Empty, Flash, NotifyLink, OrderBadge, ReadingInfo, StatusBadge, one, st
 
 export default async function Trator({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
   const [{ id }, sp, user] = await Promise.all([params, searchParams, requireUser()]);
-  const t = getTractor(Number(id));
+  const tractorId = Number(id);
+  // Consultas independentes em paralelo (banco remoto: cada ida e volta conta).
+  const [t, settings, filters, changes, readings, plans, records, types, orders, attachments] = await Promise.all([
+    getTractor(tractorId),
+    getSettings(),
+    getTractorFilters(tractorId),
+    listOilChanges({ tractorId }),
+    listHourReadings(tractorId),
+    listPlans({ tractorId }),
+    listRecords({ tractorId, limit: 50 }),
+    listMaintenanceTypes(),
+    listOrders({ tractorId, limit: 20 }),
+    listAttachments({ tractorId }),
+  ]);
   if (!t) notFound();
   const editable = canEdit(user);
-  const settings = getSettings();
-  const filters = getTractorFilters(t.id);
-  const changes = listOilChanges({ tractorId: t.id });
-  const readings = listHourReadings(t.id);
-  const plans = listPlans({ tractorId: t.id });
-  const records = listRecords({ tractorId: t.id, limit: 50 });
-  const types = listMaintenanceTypes();
-  const orders = listOrders({ tractorId: t.id, limit: 20 });
-  const parts = partsForNextChange(filters, { spec: t.oil_spec, liters: t.oil_capacity_liters }, filterTypeLabel);
-  const attachments = listAttachments({ tractorId: t.id });
+  const parts = await partsForNextChange(filters, { spec: t.oil_spec, liters: t.oil_capacity_liters }, filterTypeLabel);
   const { st } = t;
   const limits = settings.thresholds;
   const today = todayInTimeZone();

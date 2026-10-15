@@ -11,8 +11,8 @@ export const metadata: Metadata = { title: 'Configurações' };
 
 export default async function Configuracoes({ searchParams }: { searchParams: SearchParams }) {
   const [sp, user] = await Promise.all([searchParams, requireUser()]);
-  const s = getSettings();
-  const types = listMaintenanceTypes(true);
+  const s = await getSettings();
+  const types = await listMaintenanceTypes(true);
   const isAdmin = user.role === 'admin';
 
   return (
@@ -101,7 +101,7 @@ export default async function Configuracoes({ searchParams }: { searchParams: Se
 
       <section className="card">
         <h2>Backup e exportação</h2>
-        <p>O banco é um único arquivo. Baixe uma cópia regularmente e guarde fora do computador da oficina. Fotos e anexos ficam na pasta <code>data/uploads</code> e devem ser copiados junto.</p>
+        <p>O backup baixa todos os dados (proprietários, tratores, trocas, OS, estoque…) em um arquivo JSON. Baixe regularmente e guarde em local seguro. Fotos e PDFs ficam no armazenamento de arquivos e não entram nesse arquivo.</p>
         <div className="inline-forms">
           {isAdmin && <a className="btn btn-dark" href="/backup" download>Baixar backup do banco</a>}
           <Link className="btn" href="/relatorios">Exportar planilhas</Link>

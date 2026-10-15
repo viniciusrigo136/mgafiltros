@@ -16,7 +16,7 @@ export default async function Tratores({ searchParams }: { searchParams: SearchP
   const situacao = (STATUSES as string[]).includes(raw) ? (raw as MaintenanceStatus) : '';
   const ordem = one(sp.ordem) === 'numero' ? 'numero' : 'urgencia';
   const inativos = one(sp.inativos) === '1';
-  let tractors = listTractors({ q, status: situacao, includeInactive: inativos });
+  let tractors = await listTractors({ q, status: situacao, includeInactive: inativos });
   if (ordem === 'urgencia') tractors = sortByUrgency(tractors);
 
   return (

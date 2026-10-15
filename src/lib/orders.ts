@@ -57,7 +57,7 @@ const SELECT = `
   JOIN tractors t ON t.id = w.tractor_id
   JOIN owners o ON o.id = t.owner_id`;
 
-export function listOrders(opts: { status?: string; q?: string; tractorId?: number; open?: boolean; limit?: number } = {}): WorkOrder[] {
+export async function listOrders(opts: { status?: string; q?: string; tractorId?: number; open?: boolean; limit?: number } = {}): Promise<WorkOrder[]> {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (opts.status && (WO_STATUSES as readonly string[]).includes(opts.status)) { where.push('w.status = ?'); params.push(opts.status); }
@@ -72,29 +72,30 @@ export function listOrders(opts: { status?: string; q?: string; tractorId?: numb
       params.push(like, like, like, like);
     }
   }
-  return getDb()
-    .prepare(`${SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY w.number DESC LIMIT ${Math.min(opts.limit ?? 200, 500)}`)
-    .all(...params) as unknown as WorkOrder[];
+  return (await getDb()).all<WorkOrder>(
+    `${SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY w.number DESC LIMIT ${Math.min(opts.limit ?? 200, 500)}`,
+    ...params,
+  );
 }
 
-export function getOrder(id: number) {
-  const db = getDb();
-  const order = db.prepare(`${SELECT} WHERE w.id = ?`).get(id) as unknown as WorkOrder | undefined;
-  if (!order) return null;
-  const items = db
-    .prepare(
+export async function getOrder(id: number) {
+  const db = await getDb();
+  const [order, items, checklist] = await Promise.all([
+    db.get<WorkOrder>(`${SELECT} WHERE w.id = ?`, id),
+    db.all<WorkOrderItem>(
       `SELECT i.*, EXISTS (SELECT 1 FROM stock_movements m WHERE m.work_order_item_id = i.id) AS deducted
        FROM work_order_items i WHERE i.work_order_id = ? ORDER BY i.kind, i.id`,
-    )
-    .all(id) as unknown as WorkOrderItem[];
-  const checklist = db
-    .prepare('SELECT * FROM work_order_checklist WHERE work_order_id = ? ORDER BY position, id')
-    .all(id) as unknown as ChecklistItem[];
+      id,
+    ),
+    db.all<ChecklistItem>('SELECT * FROM work_order_checklist WHERE work_order_id = ? ORDER BY position, id', id),
+  ]);
+  if (!order) return null;
   return { order, items, checklist, totals: orderTotals(items, order.discount) };
 }
 
-export function openOrdersCount(): number {
-  return (getDb()
-    .prepare(`SELECT count(*) AS n FROM work_orders WHERE status IN (${OPEN_STATUSES.map((s) => `'${s}'`).join(',')})`)
-    .get() as { n: number }).n;
+export async function openOrdersCount(): Promise<number> {
+  const row = await (await getDb()).get<{ n: number }>(
+    `SELECT count(*) AS n FROM work_orders WHERE status IN (${OPEN_STATUSES.map((s) => `'${s}'`).join(',')})`,
+  );
+  return row?.n ?? 0;
 }

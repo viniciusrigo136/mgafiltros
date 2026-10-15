@@ -5,13 +5,11 @@ import { compareUrgency, computeStatus, todayInTimeZone, type StatusResult } fro
 
 export interface MaintenanceType { id: number; name: string; is_active: number; plan_count: number }
 
-export function listMaintenanceTypes(includeInactive = false): MaintenanceType[] {
-  return getDb()
-    .prepare(
-      `SELECT mt.*, (SELECT count(*) FROM maintenance_plans p WHERE p.type_id = mt.id) AS plan_count
-       FROM maintenance_types mt ${includeInactive ? '' : 'WHERE mt.is_active = 1'} ORDER BY mt.name COLLATE NOCASE`,
-    )
-    .all() as unknown as MaintenanceType[];
+export async function listMaintenanceTypes(includeInactive = false): Promise<MaintenanceType[]> {
+  return (await getDb()).all<MaintenanceType>(
+    `SELECT mt.*, (SELECT count(*) FROM maintenance_plans p WHERE p.type_id = mt.id) AS plan_count
+     FROM maintenance_types mt ${includeInactive ? '' : 'WHERE mt.is_active = 1'} ORDER BY mt.name COLLATE NOCASE`,
+  );
 }
 
 export interface Plan {
@@ -34,13 +32,14 @@ export interface Plan {
   st: StatusResult;
 }
 
-export function listPlans(opts: { tractorId?: number; activeOnly?: boolean } = {}): Plan[] {
+export async function listPlans(opts: { tractorId?: number; activeOnly?: boolean } = {}): Promise<Plan[]> {
   const where: string[] = [];
   const params: number[] = [];
   if (opts.tractorId) { where.push('p.tractor_id = ?'); params.push(opts.tractorId); }
   if (opts.activeOnly) where.push('t.is_active = 1');
-  const rows = getDb()
-    .prepare(
+  const db = await getDb();
+  const [rows, { thresholds }] = await Promise.all([
+    db.all<Omit<Plan, 'st'>>(
       `SELECT p.*, mt.name AS type_name, t.sequential_number, t.brand, t.model, o.name AS owner_name,
               t.current_hours, t.hours_read_at, r.serviced_at AS last_date, r.service_hours AS last_hours
        FROM maintenance_plans p
@@ -52,10 +51,11 @@ export function listPlans(opts: { tractorId?: number; activeOnly?: boolean } = {
          ORDER BY serviced_at DESC, service_hours DESC, id DESC LIMIT 1)
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY t.sequential_number, mt.name`,
-    )
-    .all(...params) as unknown as Omit<Plan, 'st'>[];
+      ...params,
+    ),
+    getSettings(),
+  ]);
   const today = todayInTimeZone();
-  const { thresholds } = getSettings();
   return rows.map((p) => ({
     ...p,
     st: computeStatus({
@@ -73,8 +73,8 @@ export function listPlans(opts: { tractorId?: number; activeOnly?: boolean } = {
 }
 
 /** Planos que pedem atenção (vencidos/próximos), ordenados por urgência. */
-export function planAlerts(): Plan[] {
-  return listPlans({ activeOnly: true })
+export async function planAlerts(): Promise<Plan[]> {
+  return (await listPlans({ activeOnly: true }))
     .filter((p) => p.st.status === 'vencida' || p.st.status === 'proxima')
     .sort((a, b) => compareUrgency(a.st, b.st));
 }
@@ -98,7 +98,7 @@ export interface MaintenanceRecord {
   owner_name: string;
 }
 
-export function listRecords(opts: { tractorId?: number; q?: string; typeId?: number; limit?: number } = {}): MaintenanceRecord[] {
+export async function listRecords(opts: { tractorId?: number; q?: string; typeId?: number; limit?: number } = {}): Promise<MaintenanceRecord[]> {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (opts.tractorId) { where.push('r.tractor_id = ?'); params.push(opts.tractorId); }
@@ -107,20 +107,19 @@ export function listRecords(opts: { tractorId?: number; q?: string; typeId?: num
   if (q) {
     if (/^\d+$/.test(q)) { where.push('t.sequential_number = ?'); params.push(Number(q)); }
     else {
-      where.push("(o.name LIKE ? OR t.brand LIKE ? OR t.model LIKE ? OR mt.name LIKE ? OR r.product_used LIKE ?)");
+      where.push('(o.name LIKE ? OR t.brand LIKE ? OR t.model LIKE ? OR mt.name LIKE ? OR r.product_used LIKE ?)');
       const like = `%${q}%`;
       params.push(like, like, like, like, like);
     }
   }
-  return getDb()
-    .prepare(
-      `SELECT r.*, mt.name AS type_name, t.sequential_number, t.brand, t.model, t.owner_id, o.name AS owner_name
-       FROM maintenance_records r
-       JOIN maintenance_types mt ON mt.id = r.type_id
-       JOIN tractors t ON t.id = r.tractor_id
-       JOIN owners o ON o.id = t.owner_id
-       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY r.serviced_at DESC, r.id DESC LIMIT ${Math.min(opts.limit ?? 200, 500)}`,
-    )
-    .all(...params) as unknown as MaintenanceRecord[];
+  return (await getDb()).all<MaintenanceRecord>(
+    `SELECT r.*, mt.name AS type_name, t.sequential_number, t.brand, t.model, t.owner_id, o.name AS owner_name
+     FROM maintenance_records r
+     JOIN maintenance_types mt ON mt.id = r.type_id
+     JOIN tractors t ON t.id = r.tractor_id
+     JOIN owners o ON o.id = t.owner_id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY r.serviced_at DESC, r.id DESC LIMIT ${Math.min(opts.limit ?? 200, 500)}`,
+    ...params,
+  );
 }

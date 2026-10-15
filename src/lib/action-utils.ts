@@ -76,19 +76,23 @@ export function readFilterRows(fd: FormData, prefix = ''): FilterInput[] {
 }
 
 /** Substitui os filtros de um trator ou modelo (tabela e coluna de dono informadas). */
-export function replaceFilters(db: Db, table: 'tractor_filters' | 'tractor_model_filters', ownerId: number, filters: FilterInput[]) {
+export async function replaceFilters(db: Db, table: 'tractor_filters' | 'tractor_model_filters', ownerId: number, filters: FilterInput[]) {
   const col = table === 'tractor_filters' ? 'tractor_id' : 'model_id';
-  db.prepare(`DELETE FROM ${table} WHERE ${col} = ?`).run(ownerId);
-  const ins = db.prepare(
-    `INSERT INTO ${table} (${col}, filter_type, reference_code, manufacturer, quantity, notes) VALUES (?, ?, ?, ?, ?, ?)`,
-  );
-  for (const f of filters) ins.run(ownerId, f.type, f.code, f.maker, f.qty, f.notes);
+  await db.run(`DELETE FROM ${table} WHERE ${col} = ?`, ownerId);
+  for (const f of filters) {
+    await db.run(
+      `INSERT INTO ${table} (${col}, filter_type, reference_code, manufacturer, quantity, notes) VALUES (?, ?, ?, ?, ?, ?)`,
+      ownerId, f.type, f.code, f.maker, f.qty, f.notes,
+    );
+  }
 }
 
-export function snapshotFilters(db: Db, changeId: number, filters: FilterInput[]) {
-  const ins = db.prepare(
-    `INSERT INTO oil_change_filters (oil_change_id, filter_type_snapshot, reference_code_snapshot, manufacturer_snapshot, quantity)
-     VALUES (?, ?, ?, ?, ?)`,
-  );
-  for (const f of filters) ins.run(changeId, f.type, f.code, f.maker, f.qty);
+export async function snapshotFilters(db: Db, changeId: number, filters: FilterInput[]) {
+  for (const f of filters) {
+    await db.run(
+      `INSERT INTO oil_change_filters (oil_change_id, filter_type_snapshot, reference_code_snapshot, manufacturer_snapshot, quantity)
+       VALUES (?, ?, ?, ?, ?)`,
+      changeId, f.type, f.code, f.maker, f.qty,
+    );
+  }
 }

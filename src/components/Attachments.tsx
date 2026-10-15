@@ -1,7 +1,7 @@
-import { deleteAttachment, uploadAttachment } from '@/lib/actions-admin';
+import { deleteAttachment } from '@/lib/actions-admin';
 import type { Attachment } from '@/lib/attachments';
-import { ActionForm } from './ActionForm';
 import { ConfirmButton } from './ConfirmButton';
+import { UploadForm } from './UploadForm';
 import { Empty } from './ui';
 
 /** Galeria de fotos/PDFs com envio (câmera do celular ou arquivo). */
@@ -40,16 +40,7 @@ export function Attachments({ items, tractorId, workOrderId, canEdit }: {
       {canEdit && (
         <details>
           <summary>Anexar fotos ou PDF</summary>
-          <ActionForm action={uploadAttachment} submitLabel="Enviar">
-            {tractorId ? <input type="hidden" name="tractor_id" value={tractorId} /> : null}
-            {workOrderId ? <input type="hidden" name="work_order_id" value={workOrderId} /> : null}
-            <div className="fields">
-              <label>Arquivos (até 10 MB cada)
-                <input type="file" name="files" multiple accept="image/jpeg,image/png,image/webp,application/pdf" required />
-              </label>
-              <label>Legenda<input name="caption" maxLength={200} placeholder="ex.: placa do motor, nota fiscal" /></label>
-            </div>
-          </ActionForm>
+          <UploadForm tractorId={tractorId} workOrderId={workOrderId} />
         </details>
       )}
     </>

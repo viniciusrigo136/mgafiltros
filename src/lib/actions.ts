@@ -17,7 +17,7 @@ import {
 
 // ---------- Acesso ----------
 
-// Bloqueio simples contra tentativa e erro: 5 falhas por usuário = 15 min de espera (memória do processo).
+// Bloqueio simples contra tentativa e erro: 5 falhas por usuário = 15 min de espera (memória da instância).
 const failures = new Map<string, { count: number; until: number }>();
 const MAX_FAILURES = 5;
 const LOCK_MS = 15 * 60 * 1000;
@@ -30,9 +30,10 @@ export async function login(_: ActionState, fd: FormData): Promise<ActionState> 
   if (f && f.count >= MAX_FAILURES && f.until > Date.now()) {
     return { error: 'Muitas tentativas. Aguarde 15 minutos e tente de novo.' };
   }
-  const user = getDb()
-    .prepare('SELECT id, password_hash FROM users WHERE username = ? AND is_active = 1')
-    .get(username) as { id: number; password_hash: string } | undefined;
+  const user = await (await getDb()).get<{ id: number; password_hash: string }>(
+    'SELECT id, password_hash FROM users WHERE username = ? AND is_active = 1',
+    username,
+  );
   if (!user || !verifyPassword(password, user.password_hash)) {
     const count = f && f.until > Date.now() ? f.count + 1 : 1;
     failures.set(key, { count, until: Date.now() + LOCK_MS });
@@ -66,13 +67,13 @@ export async function saveOwner(_: ActionState, fd: FormData): Promise<ActionSta
     if (rawPhone && !phone) throw new ValidationError('Telefone: informe DDD + número (10 ou 11 dígitos).');
     const city = text(fd, 'city', 'Município', { max: 120 });
     const notes = text(fd, 'notes', 'Observações', { max: 2000 });
-    const db = getDb();
+    const db = await getDb();
     const existing = Number(fd.get('id')) || 0;
     if (existing) {
-      db.prepare('UPDATE owners SET name = ?, phone = ?, city = ?, notes = ? WHERE id = ?').run(name, phone, city, notes, existing);
+      await db.run('UPDATE owners SET name = ?, phone = ?, city = ?, notes = ? WHERE id = ?', name, phone, city, notes, existing);
       ownerId = existing;
     } else {
-      ownerId = Number(db.prepare('INSERT INTO owners (name, phone, city, notes) VALUES (?, ?, ?, ?)').run(name, phone, city, notes).lastInsertRowid);
+      ownerId = (await db.run('INSERT INTO owners (name, phone, city, notes) VALUES (?, ?, ?, ?)', name, phone, city, notes)).lastInsertRowid;
     }
   });
   if (r) return r;
@@ -84,7 +85,7 @@ export async function setOwnerActive(fd: FormData) {
   const active = fd.get('active') === '1' ? 1 : 0;
   await guardRedirect(`/proprietarios/${ownerId}`, async () => {
     await requireEditor();
-    getDb().prepare('UPDATE owners SET is_active = ? WHERE id = ?').run(active, ownerId);
+    await (await getDb()).run('UPDATE owners SET is_active = ? WHERE id = ?', active, ownerId);
   });
   done(`/proprietarios/${ownerId}`, active ? 'Proprietário reativado.' : 'Proprietário inativado.');
 }
@@ -94,10 +95,10 @@ export async function deleteOwner(fd: FormData) {
   const ownerId = Number(fd.get('id'));
   await guardRedirect(`/proprietarios/${ownerId}`, async () => {
     await requireAdmin();
-    const db = getDb();
-    const { n } = db.prepare('SELECT count(*) AS n FROM tractors WHERE owner_id = ?').get(ownerId) as { n: number };
-    if (n > 0) throw new ValidationError('Proprietário com tratores não pode ser excluído; use Inativar.');
-    db.prepare('DELETE FROM owners WHERE id = ?').run(ownerId);
+    const db = await getDb();
+    const row = await db.get<{ n: number }>('SELECT count(*) AS n FROM tractors WHERE owner_id = ?', ownerId);
+    if (row && row.n > 0) throw new ValidationError('Proprietário com tratores não pode ser excluído; use Inativar.');
+    await db.run('DELETE FROM owners WHERE id = ?', ownerId);
   });
   done('/proprietarios', 'Proprietário excluído.');
 }
@@ -121,16 +122,16 @@ export async function saveTractor(_: ActionState, fd: FormData): Promise<ActionS
     const intMonths = number(fd, 'interval_months', 'Intervalo em meses', { integer: true, positive: true, max: 120 });
     const notes = text(fd, 'notes', 'Observações', { max: 2000 });
     const filters = readFilterRows(fd);
-    const db = getDb();
-    if (!db.prepare('SELECT 1 FROM owners WHERE id = ?').get(ownerId)) throw new ValidationError('Proprietário não encontrado.');
+    if (!(await (await getDb()).get('SELECT 1 AS ok FROM owners WHERE id = ?', ownerId))) throw new ValidationError('Proprietário não encontrado.');
 
     if (existing) {
-      transaction(db, () => {
-        db.prepare(
+      await transaction(async (tx) => {
+        await tx.run(
           `UPDATE tractors SET owner_id = ?, brand = ?, model = ?, year = ?, serial_number = ?, oil_spec = ?,
              oil_capacity_liters = ?, interval_hours = ?, interval_months = ?, notes = ? WHERE id = ?`,
-        ).run(ownerId, brand, model, year, serial, oilSpec, oilCap, intHours, intMonths, notes, existing);
-        replaceFilters(db, 'tractor_filters', existing, filters);
+          ownerId, brand, model, year, serial, oilSpec, oilCap, intHours, intMonths, notes, existing,
+        );
+        await replaceFilters(tx, 'tractor_filters', existing, filters);
       });
       tractorId = existing;
       return;
@@ -156,27 +157,25 @@ export async function saveTractor(_: ActionState, fd: FormData): Promise<ActionS
     }
     const initOil = text(fd, 'init_oil', 'Óleo da última troca', { max: 120 }) ?? oilSpec;
     const initLiters = number(fd, 'init_liters', 'Litros da última troca', { positive: true, max: 1000 });
-    transaction(db, () => {
-      const seq = nextTractorNumber(db);
-      tractorId = Number(
-        db.prepare(
-          `INSERT INTO tractors (sequential_number, owner_id, brand, model, year, serial_number, current_hours, hours_read_at,
-             oil_spec, oil_capacity_liters, interval_hours, interval_months, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(seq, ownerId, brand, model, year, serial, hours, readAt, oilSpec, oilCap, intHours, intMonths, notes).lastInsertRowid,
-      );
-      replaceFilters(db, 'tractor_filters', tractorId, filters);
+    await transaction(async (tx) => {
+      const seq = await nextTractorNumber(tx);
+      tractorId = (await tx.run(
+        `INSERT INTO tractors (sequential_number, owner_id, brand, model, year, serial_number, current_hours, hours_read_at,
+           oil_spec, oil_capacity_liters, interval_hours, interval_months, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        seq, ownerId, brand, model, year, serial, hours, readAt, oilSpec, oilCap, intHours, intMonths, notes,
+      )).lastInsertRowid;
+      await replaceFilters(tx, 'tractor_filters', tractorId, filters);
       if (hours != null) {
-        db.prepare('INSERT INTO hour_readings (tractor_id, hours, read_at, created_by) VALUES (?, ?, ?, ?)').run(tractorId, hours, readAt!, user.id);
+        await tx.run('INSERT INTO hour_readings (tractor_id, hours, read_at, created_by) VALUES (?, ?, ?, ?)', tractorId, hours, readAt, user.id);
       }
       if (initDate != null) {
-        const changeId = Number(
-          db.prepare(
-            `INSERT INTO oil_changes (tractor_id, serviced_at, service_hours, oil_used, liters_used, notes, is_initial, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
-          ).run(tractorId, initDate, initHours!, initOil, initLiters, 'Última troca informada no cadastro do trator.', user.id).lastInsertRowid,
-        );
-        if (fd.get('init_filters') === '1') snapshotFilters(db, changeId, filters);
+        const changeId = (await tx.run(
+          `INSERT INTO oil_changes (tractor_id, serviced_at, service_hours, oil_used, liters_used, notes, is_initial, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+          tractorId, initDate, initHours, initOil, initLiters, 'Última troca informada no cadastro do trator.', user.id,
+        )).lastInsertRowid;
+        if (fd.get('init_filters') === '1') await snapshotFilters(tx, changeId, filters);
       }
     });
   });
@@ -189,7 +188,7 @@ export async function setTractorActive(fd: FormData) {
   const active = fd.get('active') === '1' ? 1 : 0;
   await guardRedirect(`/tratores/${tractorId}`, async () => {
     await requireEditor();
-    getDb().prepare('UPDATE tractors SET is_active = ? WHERE id = ?').run(active, tractorId);
+    await (await getDb()).run('UPDATE tractors SET is_active = ? WHERE id = ?', active, tractorId);
   });
   done(`/tratores/${tractorId}`, active ? 'Trator reativado.' : 'Trator inativado (o número não será reutilizado).');
 }
@@ -207,21 +206,22 @@ export async function updateHours(_: ActionState, fd: FormData): Promise<ActionS
     const correction = fd.get('correction') === '1';
     const reason = text(fd, 'reason', 'Justificativa', { max: 500 });
     if (correction && !reason) throw new ValidationError('Correção exige justificativa (ex.: substituição do horímetro).');
-    const db = getDb();
-    const t = db.prepare('SELECT current_hours, hours_read_at FROM tractors WHERE id = ?').get(tractorId) as TractorState | undefined;
-    if (!t) throw new ValidationError('Trator não encontrado.');
-    if (!correction && t.current_hours != null) {
-      if (hours < t.current_hours) {
-        throw new ValidationError(`Leitura menor que a anterior (${t.current_hours} h). Marque "Correção" e justifique, se for o caso.`);
+    await transaction(async (tx) => {
+      const t = await tx.get<TractorState>('SELECT current_hours, hours_read_at FROM tractors WHERE id = ?', tractorId);
+      if (!t) throw new ValidationError('Trator não encontrado.');
+      if (!correction && t.current_hours != null) {
+        if (hours < t.current_hours) {
+          throw new ValidationError(`Leitura menor que a anterior (${t.current_hours} h). Marque "Correção" e justifique, se for o caso.`);
+        }
+        if (readAt < t.hours_read_at!) {
+          throw new ValidationError('Já existe leitura com data mais recente. Use "Correção" para ajustar.');
+        }
       }
-      if (readAt < t.hours_read_at!) {
-        throw new ValidationError('Já existe leitura com data mais recente. Use "Correção" para ajustar.');
-      }
-    }
-    transaction(db, () => {
-      db.prepare('UPDATE tractors SET current_hours = ?, hours_read_at = ? WHERE id = ?').run(hours, readAt, tractorId);
-      db.prepare('INSERT INTO hour_readings (tractor_id, hours, read_at, is_correction, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(tractorId, hours, readAt, correction ? 1 : 0, correction ? reason : null, user.id);
+      await tx.run('UPDATE tractors SET current_hours = ?, hours_read_at = ? WHERE id = ?', hours, readAt, tractorId);
+      await tx.run(
+        'INSERT INTO hour_readings (tractor_id, hours, read_at, is_correction, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+        tractorId, hours, readAt, correction ? 1 : 0, correction ? reason : null, user.id,
+      );
     });
   });
   if (r) return r;
@@ -231,21 +231,20 @@ export async function updateHours(_: ActionState, fd: FormData): Promise<ActionS
 // ---------- Trocas de óleo ----------
 
 /** Baixa filtros e óleo do estoque, ligando as movimentações à troca (excluir a troca devolve o estoque). */
-function deductForOilChange(db: Db, changeId: number, filters: FilterInput[], oilUsed: string | null, liters: number | null, userId: number | null) {
-  const findItem = db.prepare('SELECT id FROM stock_items WHERE reference_code = ? AND is_active = 1');
-  const move = db.prepare(
-    'INSERT INTO stock_movements (item_id, delta, reason, oil_change_id, created_by) VALUES (?, ?, ?, ?, ?)',
-  );
+async function deductForOilChange(tx: Db, changeId: number, filters: FilterInput[], oilUsed: string | null, liters: number | null, userId: number | null) {
+  const findItem = (code: string) => tx.get<{ id: number }>('SELECT id FROM stock_items WHERE reference_code = ? AND is_active = 1', code);
+  const move = (itemId: number, delta: number) =>
+    tx.run('INSERT INTO stock_movements (item_id, delta, reason, oil_change_id, created_by) VALUES (?, ?, ?, ?, ?)', itemId, delta, 'Troca de óleo', changeId, userId);
   const missing: string[] = [];
   let count = 0;
   for (const f of filters) {
-    const item = findItem.get(f.code) as { id: number } | undefined;
-    if (item) { move.run(item.id, -f.qty, 'Troca de óleo', changeId, userId); count++; }
+    const item = await findItem(f.code);
+    if (item) { await move(item.id, -f.qty); count++; }
     else missing.push(f.code);
   }
   if (oilUsed && liters) {
-    const item = findItem.get(oilUsed) as { id: number } | undefined;
-    if (item) { move.run(item.id, -liters, 'Troca de óleo', changeId, userId); count++; }
+    const item = await findItem(oilUsed);
+    if (item) { await move(item.id, -liters); count++; }
     else missing.push(oilUsed);
   }
   return { count, missing };
@@ -269,60 +268,64 @@ export async function saveOilChange(_: ActionState, fd: FormData): Promise<Actio
     if (correction && !reason) throw new ValidationError('Correção exige justificativa.');
     const workOrderId = Number(fd.get('work_order_id')) || null;
     const deduct = fd.get('deduct_stock') === '1';
-
-    const db = getDb();
-    const t = db.prepare('SELECT current_hours, hours_read_at FROM tractors WHERE id = ?').get(tractorId) as TractorState | undefined;
-    if (!t) throw new ValidationError('Trator não encontrado.');
-
-    // Consistência com o histórico: horas não podem "voltar" ao longo das datas.
-    if (!correction) {
-      const conflict = db.prepare(
-        `SELECT serviced_at, service_hours FROM oil_changes WHERE tractor_id = ?
-         AND ((serviced_at < ? AND service_hours > ?) OR (serviced_at > ? AND service_hours < ?)) LIMIT 1`,
-      ).get(tractorId, servicedAt, hours, servicedAt, hours) as { serviced_at: string; service_hours: number } | undefined;
-      if (conflict) {
-        throw new ValidationError(
-          `Inconsistente com a troca de ${conflict.serviced_at.split('-').reverse().join('/')} (${conflict.service_hours} h). Marque "Correção" e justifique, se for o caso.`,
-        );
-      }
-    }
-    const isLatestReading = t.hours_read_at == null || servicedAt >= t.hours_read_at;
-    if (!correction && t.current_hours != null) {
-      if (isLatestReading && hours < t.current_hours) {
-        throw new ValidationError(`Horímetro no serviço menor que a última leitura (${t.current_hours} h). Marque "Correção" e justifique, se for o caso.`);
-      }
-      if (!isLatestReading && hours > t.current_hours) {
-        throw new ValidationError('Serviço com data anterior à última leitura mas com horímetro maior: verifique os dados.');
-      }
-    }
+    const selectedIds = fd.getAll('filter_id').map(Number).filter(Number.isInteger);
+    const extraFilters = readFilterRows(fd, 'extra_');
     if (correction) notes = `[Correção: ${reason}]${notes ? ` ${notes}` : ''}`;
 
-    // Filtros trocados: os cadastrados (snapshot do momento) + linhas avulsas.
-    const selectedIds = fd.getAll('filter_id').map(Number).filter(Number.isInteger);
-    const registered = selectedIds.length
-      ? (db.prepare(`SELECT * FROM tractor_filters WHERE tractor_id = ? AND id IN (${selectedIds.map(() => '?').join(',')})`)
-          .all(tractorId, ...selectedIds) as { filter_type: string; reference_code: string; manufacturer: string | null; quantity: number }[])
-      : [];
-    const filters: FilterInput[] = [
-      ...registered.map((f) => ({ type: f.filter_type, code: f.reference_code, maker: f.manufacturer, qty: f.quantity, notes: null })),
-      ...readFilterRows(fd, 'extra_'),
-    ];
+    await transaction(async (tx) => {
+      const t = await tx.get<TractorState>('SELECT current_hours, hours_read_at FROM tractors WHERE id = ?', tractorId);
+      if (!t) throw new ValidationError('Trator não encontrado.');
 
-    transaction(db, () => {
-      const changeId = Number(
-        db.prepare(
-          `INSERT INTO oil_changes (tractor_id, serviced_at, service_hours, oil_used, liters_used, notes, performed_by, created_by, work_order_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(tractorId, servicedAt, hours, oilUsed, liters, notes, performedBy, user.id, workOrderId).lastInsertRowid,
-      );
-      snapshotFilters(db, changeId, filters);
+      // Consistência com o histórico: horas não podem "voltar" ao longo das datas.
+      if (!correction) {
+        const conflict = await tx.get<{ serviced_at: string; service_hours: number }>(
+          `SELECT serviced_at, service_hours FROM oil_changes WHERE tractor_id = ?
+           AND ((serviced_at < ? AND service_hours > ?) OR (serviced_at > ? AND service_hours < ?)) LIMIT 1`,
+          tractorId, servicedAt, hours, servicedAt, hours,
+        );
+        if (conflict) {
+          throw new ValidationError(
+            `Inconsistente com a troca de ${conflict.serviced_at.split('-').reverse().join('/')} (${conflict.service_hours} h). Marque "Correção" e justifique, se for o caso.`,
+          );
+        }
+      }
+      const isLatestReading = t.hours_read_at == null || servicedAt >= t.hours_read_at;
+      if (!correction && t.current_hours != null) {
+        if (isLatestReading && hours < t.current_hours) {
+          throw new ValidationError(`Horímetro no serviço menor que a última leitura (${t.current_hours} h). Marque "Correção" e justifique, se for o caso.`);
+        }
+        if (!isLatestReading && hours > t.current_hours) {
+          throw new ValidationError('Serviço com data anterior à última leitura mas com horímetro maior: verifique os dados.');
+        }
+      }
+
+      // Filtros trocados: os cadastrados (snapshot do momento) + linhas avulsas.
+      const registered = selectedIds.length
+        ? await tx.all<{ filter_type: string; reference_code: string; manufacturer: string | null; quantity: number }>(
+            `SELECT * FROM tractor_filters WHERE tractor_id = ? AND id IN (${selectedIds.map(() => '?').join(',')})`,
+            tractorId, ...selectedIds,
+          )
+        : [];
+      const filters: FilterInput[] = [
+        ...registered.map((f) => ({ type: f.filter_type, code: f.reference_code, maker: f.manufacturer, qty: f.quantity, notes: null })),
+        ...extraFilters,
+      ];
+
+      const changeId = (await tx.run(
+        `INSERT INTO oil_changes (tractor_id, serviced_at, service_hours, oil_used, liters_used, notes, performed_by, created_by, work_order_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        tractorId, servicedAt, hours, oilUsed, liters, notes, performedBy, user.id, workOrderId,
+      )).lastInsertRowid;
+      await snapshotFilters(tx, changeId, filters);
       if (isLatestReading || correction) {
-        db.prepare('UPDATE tractors SET current_hours = ?, hours_read_at = ? WHERE id = ?').run(hours, servicedAt, tractorId);
-        db.prepare('INSERT INTO hour_readings (tractor_id, hours, read_at, is_correction, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(tractorId, hours, servicedAt, correction ? 1 : 0, correction ? reason : null, user.id);
+        await tx.run('UPDATE tractors SET current_hours = ?, hours_read_at = ? WHERE id = ?', hours, servicedAt, tractorId);
+        await tx.run(
+          'INSERT INTO hour_readings (tractor_id, hours, read_at, is_correction, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+          tractorId, hours, servicedAt, correction ? 1 : 0, correction ? reason : null, user.id,
+        );
       }
       if (deduct) {
-        const res = deductForOilChange(db, changeId, filters, oilUsed, liters, user.id);
+        const res = await deductForOilChange(tx, changeId, filters, oilUsed, liters, user.id);
         stockNote = ` Estoque: ${res.count} ${res.count === 1 ? 'item baixado' : 'itens baixados'}.`;
         if (res.missing.length) stockNote += ` Sem cadastro no estoque: ${res.missing.join(', ')}.`;
       }
@@ -335,12 +338,16 @@ export async function saveOilChange(_: ActionState, fd: FormData): Promise<Actio
 /** Remove um lançamento feito por engano (o cálculo volta a usar a troca anterior e o estoque é devolvido). */
 export async function deleteOilChange(fd: FormData) {
   const changeId = Number(fd.get('id'));
-  const db = getDb();
-  const row = db.prepare('SELECT tractor_id FROM oil_changes WHERE id = ?').get(changeId) as { tractor_id: number } | undefined;
+  const row = await (await getDb()).get<{ tractor_id: number }>('SELECT tractor_id FROM oil_changes WHERE id = ?', changeId);
   if (!row) redirect('/manutencoes');
   await guardRedirect(`/tratores/${row.tractor_id}`, async () => {
     await requireEditor();
-    db.prepare('DELETE FROM oil_changes WHERE id = ?').run(changeId);
+    await transaction(async (tx) => {
+      // Exclusões explícitas (não depende de ON DELETE CASCADE estar ativo na conexão).
+      await tx.run('DELETE FROM stock_movements WHERE oil_change_id = ?', changeId);
+      await tx.run('DELETE FROM oil_change_filters WHERE oil_change_id = ?', changeId);
+      await tx.run('DELETE FROM oil_changes WHERE id = ?', changeId);
+    });
   });
   done(`/tratores/${row.tractor_id}`, 'Registro de troca excluído.');
 }

@@ -8,11 +8,11 @@ import { OilChangeList } from '@/components/OilChangeList';
 import { Empty, Flash, PageHead, StatusBadge, one, statusReason, type SearchParams } from '@/components/ui';
 
 export default async function Proprietario({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
-  const owner = getOwner(Number((await params).id));
+  const owner = await getOwner(Number((await params).id));
   if (!owner) notFound();
   const sp = await searchParams;
-  const tractors = sortByUrgency(listTractors({ ownerId: owner.id, includeInactive: true }));
-  const changes = listOilChanges({ ownerId: owner.id, limit: 50 });
+  const tractors = sortByUrgency(await listTractors({ ownerId: owner.id, includeInactive: true }));
+  const changes = await listOilChanges({ ownerId: owner.id, limit: 50 });
   const wa = whatsappUrl(owner.phone);
 
   return (

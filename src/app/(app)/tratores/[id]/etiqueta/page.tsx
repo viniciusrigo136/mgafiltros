@@ -8,14 +8,14 @@ import { PageHead } from '@/components/ui';
 
 /** Etiqueta para colar no trator: QR abre a ficha direto pelo celular (na rede da oficina). */
 export default async function Etiqueta({ params }: { params: Promise<{ id: string }> }) {
-  const t = getTractor(Number((await params).id));
+  const t = await getTractor(Number((await params).id));
   if (!t) notFound();
   const h = await headers();
   const host = h.get('x-forwarded-host') ?? h.get('host') ?? 'localhost:3000';
   const proto = h.get('x-forwarded-proto') ?? 'http';
   const url = `${proto}://${host}/tratores/${t.id}`;
   const svg = await QRCode.toString(url, { type: 'svg', margin: 0, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } });
-  const filters = getTractorFilters(t.id);
+  const filters = await getTractorFilters(t.id);
 
   return (
     <>

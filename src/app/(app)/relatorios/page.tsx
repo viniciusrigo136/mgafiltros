@@ -19,8 +19,8 @@ export default async function Relatorios({ searchParams }: { searchParams: Searc
   const rawTo = one(sp.ate);
   const to = isValidIsoDate(rawTo) ? rawTo : today;
   const from = isValidIsoDate(rawFrom) && rawFrom <= to ? rawFrom : `${addMonths(to, -11).slice(0, 7)}-01`;
-  const r = periodReport(from, to);
-  const overdue = dashboard().attention.filter((t) => t.st.status === 'vencida');
+  const [r, dash] = await Promise.all([periodReport(from, to), dashboard()]);
+  const overdue = dash.attention.filter((t) => t.st.status === 'vencida');
   const maxMonth = Math.max(1, ...r.byMonth.map((m) => m.oil + m.other));
 
   return (

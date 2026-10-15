@@ -8,10 +8,10 @@ import { Brand, PageHead } from '@/components/ui';
 
 /** Orçamento / OS em formato de documento (imprimir ou salvar como PDF pelo navegador). */
 export default async function ImprimirOrdem({ params }: { params: Promise<{ id: string }> }) {
-  const data = getOrder(Number((await params).id));
+  const data = await getOrder(Number((await params).id));
   if (!data) notFound();
   const { order: o, items, checklist, totals } = data;
-  const s = getSettings();
+  const s = await getSettings();
   const isQuote = o.status === 'orcamento';
 
   return (

@@ -20,7 +20,7 @@ function RoleSelect({ value }: { value?: Role }) {
 
 export default async function Usuarios({ searchParams }: { searchParams: SearchParams }) {
   const [sp, user] = await Promise.all([searchParams, requireUser()]);
-  const users = getDb().prepare('SELECT id, username, name, role, is_active FROM users ORDER BY is_active DESC, name').all() as unknown as Row[];
+  const users = await (await getDb()).all<Row>('SELECT id, username, name, role, is_active FROM users ORDER BY is_active DESC, name');
   const isAdmin = user.role === 'admin';
 
   return (

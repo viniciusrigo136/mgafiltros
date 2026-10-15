@@ -1,7 +1,8 @@
-// Cria (ou redefine a senha de) um usuário da oficina. Não existe cadastro público.
+// Cria (ou redefine a senha de) um usuário administrador. Não existe cadastro público.
 // Uso: npm run user:create -- <usuario> "<Nome>" [senha]
+// Usa TURSO_DATABASE_URL/TURSO_AUTH_TOKEN do .env.local se definidos; senão, o banco local.
 import { randomBytes } from 'node:crypto';
-import { openDb } from '../src/lib/db.ts';
+import { openClient } from '../src/lib/db.ts';
 import { hashPassword } from '../src/lib/password.ts';
 
 const [username, name, given] = process.argv.slice(2);
@@ -14,13 +15,20 @@ if (given && given.length < 8) {
   process.exit(1);
 }
 const password = given || randomBytes(9).toString('base64url');
-const db = openDb(process.env.DATABASE_PATH || 'data/mga.db');
-const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as { id: number } | undefined;
-if (existing) {
-  db.prepare('UPDATE users SET name = ?, password_hash = ?, is_active = 1 WHERE id = ?').run(name, hashPassword(password), existing.id);
-  console.log(`Senha redefinida para "${username}".`);
+const db = await openClient();
+const existing = await db.execute({ sql: 'SELECT id FROM users WHERE username = ?', args: [username] });
+if (existing.rows.length) {
+  await db.execute({
+    sql: "UPDATE users SET name = ?, password_hash = ?, is_active = 1, role = 'admin' WHERE id = ?",
+    args: [name, hashPassword(password), existing.rows[0].id],
+  });
+  console.log(`Senha redefinida para "${username}" (perfil administrador).`);
 } else {
-  db.prepare('INSERT INTO users (username, name, password_hash) VALUES (?, ?, ?)').run(username, name, hashPassword(password));
-  console.log(`Usuário "${username}" criado.`);
+  await db.execute({
+    sql: "INSERT INTO users (username, name, password_hash, role) VALUES (?, ?, ?, 'admin')",
+    args: [username, name, hashPassword(password)],
+  });
+  console.log(`Administrador "${username}" criado.`);
 }
 if (!given) console.log(`Senha gerada (anote, não será exibida de novo): ${password}`);
+db.close();

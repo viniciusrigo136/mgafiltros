@@ -1,8 +1,6 @@
 'use server';
 // Configurações, tipos de manutenção, usuários, anexos e importação de planilha.
 import { randomUUID } from 'node:crypto';
-import { mkdir, unlink, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import { getDb, nextTractorNumber, transaction } from './db';
 import { requireAdmin, requireEditor, type Role } from './auth';
 import { hashPassword } from './password';
@@ -10,7 +8,7 @@ import { saveSettings } from './settings';
 import { isValidIsoDate, todayInTimeZone } from './status';
 import { normalizePhone } from './format';
 import { parseCsv } from './csv';
-import { ALLOWED_MIME, MAX_UPLOAD_BYTES, getAttachment, uploadsDir } from './attachments';
+import { ALLOWED_MIME, MAX_UPLOAD_BYTES, getAttachment, removeFile, storeFile } from './attachments';
 import { ValidationError, number, text } from './validate';
 import { done, guard, guardRedirect, type ActionState } from './action-utils';
 
@@ -27,7 +25,7 @@ export async function saveShopSettings(_: ActionState, fd: FormData): Promise<Ac
       .map((l) => l.trim())
       .filter(Boolean)
       .slice(0, 60);
-    saveSettings({
+    await saveSettings({
       shopName: text(fd, 'shopName', 'Nome da oficina', { required: true, max: 120 })!,
       shopPhone: text(fd, 'shopPhone', 'Telefone', { max: 40 }) ?? '',
       shopAddress: text(fd, 'shopAddress', 'Endereço', { max: 200 }) ?? '',
@@ -48,9 +46,9 @@ export async function saveMaintenanceType(_: ActionState, fd: FormData): Promise
     await requireAdmin();
     const name = text(fd, 'name', 'Nome do tipo', { required: true, max: 80 })!;
     const typeId = Number(fd.get('id')) || 0;
-    const db = getDb();
-    if (typeId) db.prepare('UPDATE maintenance_types SET name = ? WHERE id = ?').run(name, typeId);
-    else db.prepare('INSERT INTO maintenance_types (name) VALUES (?)').run(name);
+    const db = await getDb();
+    if (typeId) await db.run('UPDATE maintenance_types SET name = ? WHERE id = ?', name, typeId);
+    else await db.run('INSERT INTO maintenance_types (name) VALUES (?)', name);
   });
   if (r) return r;
   done('/configuracoes#tipos', 'Tipo de manutenção salvo.');
@@ -59,7 +57,7 @@ export async function saveMaintenanceType(_: ActionState, fd: FormData): Promise
 export async function setMaintenanceTypeActive(fd: FormData) {
   await guardRedirect('/configuracoes', async () => {
     await requireAdmin();
-    getDb().prepare('UPDATE maintenance_types SET is_active = ? WHERE id = ?').run(fd.get('active') === '1' ? 1 : 0, Number(fd.get('id')));
+    await (await getDb()).run('UPDATE maintenance_types SET is_active = ? WHERE id = ?', fd.get('active') === '1' ? 1 : 0, Number(fd.get('id')));
   });
   done('/configuracoes#tipos', 'Tipo de manutenção atualizado.');
 }
@@ -68,8 +66,9 @@ export async function setMaintenanceTypeActive(fd: FormData) {
 
 const ROLES: Role[] = ['admin', 'mecanico', 'consulta'];
 
-function activeAdmins(excludeId: number): number {
-  return (getDb().prepare("SELECT count(*) AS n FROM users WHERE role = 'admin' AND is_active = 1 AND id <> ?").get(excludeId) as { n: number }).n;
+async function activeAdmins(excludeId: number): Promise<number> {
+  const row = await (await getDb()).get<{ n: number }>("SELECT count(*) AS n FROM users WHERE role = 'admin' AND is_active = 1 AND id <> ?", excludeId);
+  return row?.n ?? 0;
 }
 
 export async function saveUser(_: ActionState, fd: FormData): Promise<ActionState> {
@@ -83,14 +82,14 @@ export async function saveUser(_: ActionState, fd: FormData): Promise<ActionStat
     if (!ROLES.includes(role)) throw new ValidationError('Selecione o perfil.');
     const password = String(fd.get('password') ?? '');
     if (password && password.length < 8) throw new ValidationError('A senha deve ter pelo menos 8 caracteres.');
-    const db = getDb();
+    const db = await getDb();
     if (userId) {
-      if (role !== 'admin' && activeAdmins(userId) === 0) throw new ValidationError('É preciso manter ao menos um administrador ativo.');
-      db.prepare('UPDATE users SET username = ?, name = ?, role = ? WHERE id = ?').run(username, name, role, userId);
-      if (password) db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), userId);
+      if (role !== 'admin' && (await activeAdmins(userId)) === 0) throw new ValidationError('É preciso manter ao menos um administrador ativo.');
+      await db.run('UPDATE users SET username = ?, name = ?, role = ? WHERE id = ?', username, name, role, userId);
+      if (password) await db.run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(password), userId);
     } else {
       if (!password) throw new ValidationError('Defina uma senha para o novo usuário.');
-      db.prepare('INSERT INTO users (username, name, role, password_hash) VALUES (?, ?, ?, ?)').run(username, name, role, hashPassword(password));
+      await db.run('INSERT INTO users (username, name, role, password_hash) VALUES (?, ?, ?, ?)', username, name, role, hashPassword(password));
     }
   });
   if (r) return r;
@@ -102,8 +101,8 @@ export async function setUserActive(fd: FormData) {
   const active = fd.get('active') === '1' ? 1 : 0;
   await guardRedirect('/configuracoes/usuarios', async () => {
     await requireAdmin();
-    if (!active && activeAdmins(userId) === 0) throw new ValidationError('É preciso manter ao menos um administrador ativo.');
-    getDb().prepare('UPDATE users SET is_active = ? WHERE id = ?').run(active, userId);
+    if (!active && (await activeAdmins(userId)) === 0) throw new ValidationError('É preciso manter ao menos um administrador ativo.');
+    await (await getDb()).run('UPDATE users SET is_active = ? WHERE id = ?', active, userId);
   });
   done('/configuracoes/usuarios', active ? 'Usuário reativado.' : 'Usuário desativado.');
 }
@@ -118,43 +117,42 @@ function sniffMime(buf: Buffer): string | null {
   return null;
 }
 
-export async function uploadAttachment(_: ActionState, fd: FormData): Promise<ActionState> {
-  const tractorId = Number(fd.get('tractor_id')) || null;
-  const workOrderId = Number(fd.get('work_order_id')) || null;
-  const back = workOrderId ? `/ordens/${workOrderId}#anexos` : `/tratores/${tractorId}#anexos`;
-  const r = await guard(async () => {
+/** Recebe UM arquivo por chamada (o navegador reduz as fotos e envia um a um, por causa do limite da Vercel). */
+export async function uploadAttachment(fd: FormData): Promise<ActionState> {
+  return guard(async () => {
     const user = await requireEditor();
+    const tractorId = Number(fd.get('tractor_id')) || null;
+    const workOrderId = Number(fd.get('work_order_id')) || null;
     if (!tractorId && !workOrderId) throw new ValidationError('Anexo sem destino.');
-    const files = fd.getAll('files').filter((f): f is File => f instanceof File && f.size > 0);
-    if (!files.length) throw new ValidationError('Selecione ao menos um arquivo.');
+    const file = fd.get('file');
+    if (!(file instanceof File) || file.size === 0) throw new ValidationError('Selecione um arquivo.');
+    if (file.size > MAX_UPLOAD_BYTES) throw new ValidationError(`${file.name}: arquivo maior que 4 MB.`);
     const caption = text(fd, 'caption', 'Legenda', { max: 200 });
-    const dir = uploadsDir();
-    await mkdir(dir, { recursive: true });
-    const db = getDb();
-    for (const file of files) {
-      if (file.size > MAX_UPLOAD_BYTES) throw new ValidationError(`${file.name}: arquivo maior que 10 MB.`);
-      const buf = Buffer.from(await file.arrayBuffer());
-      const mime = sniffMime(buf);
-      if (!mime) throw new ValidationError(`${file.name}: envie foto (JPG, PNG, WEBP) ou PDF.`);
-      const stored = `${randomUUID()}${ALLOWED_MIME[mime]}`;
-      await writeFile(path.join(dir, stored), buf);
-      db.prepare(
+    const buf = Buffer.from(await file.arrayBuffer());
+    const mime = sniffMime(buf);
+    if (!mime) throw new ValidationError(`${file.name}: envie foto (JPG, PNG, WEBP) ou PDF.`);
+    const stored = `${randomUUID()}${ALLOWED_MIME[mime]}`;
+    await storeFile(stored, buf, mime);
+    try {
+      await (await getDb()).run(
         'INSERT INTO attachments (tractor_id, work_order_id, stored_name, original_name, mime, size, caption, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      ).run(tractorId, workOrderId, stored, file.name.slice(0, 200), mime, buf.length, caption, user.id);
+        tractorId, workOrderId, stored, file.name.slice(0, 200), mime, buf.length, caption, user.id,
+      );
+    } catch (e) {
+      await removeFile(stored);
+      throw e;
     }
   });
-  if (r) return r;
-  done(back, 'Arquivo(s) anexado(s).');
 }
 
 export async function deleteAttachment(fd: FormData) {
-  const att = getAttachment(Number(fd.get('id')));
+  const att = await getAttachment(Number(fd.get('id')));
   if (!att) done('/', 'Anexo já removido.');
   const back = att.work_order_id ? `/ordens/${att.work_order_id}#anexos` : `/tratores/${att.tractor_id}#anexos`;
   await guardRedirect(back, async () => {
     await requireEditor();
-    getDb().prepare('DELETE FROM attachments WHERE id = ?').run(att.id);
-    await unlink(path.join(uploadsDir(), att.stored_name)).catch(() => undefined);
+    await (await getDb()).run('DELETE FROM attachments WHERE id = ?', att.id);
+    await removeFile(att.stored_name);
   });
   done(back, 'Anexo removido.');
 }
@@ -181,7 +179,7 @@ export async function importSpreadsheet(_: ActionState, fd: FormData): Promise<A
     const user = await requireAdmin();
     const file = fd.get('file');
     if (!(file instanceof File) || file.size === 0) throw new ValidationError('Selecione o arquivo CSV.');
-    if (file.size > 5 * 1024 * 1024) throw new ValidationError('Arquivo maior que 5 MB.');
+    if (file.size > 4 * 1024 * 1024) throw new ValidationError('Arquivo maior que 4 MB.');
     const rows = parseCsv(await file.text());
     if (rows.length < 2) throw new ValidationError('A planilha precisa do cabeçalho e ao menos uma linha.');
     const header = rows[0].map((h) => h.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '_'));
@@ -223,32 +221,32 @@ export async function importSpreadsheet(_: ActionState, fd: FormData): Promise<A
       });
     });
     if (errors.length) throw new ValidationError(`Nada foi importado. Corrija:\n${errors.slice(0, 30).join('\n')}${errors.length > 30 ? `\n… e mais ${errors.length - 30}` : ''}`);
+    if (parsed.length > 2000) throw new ValidationError('Importe no máximo 2000 linhas por vez.');
 
-    const db = getDb();
-    transaction(db, () => {
+    await transaction(async (tx) => {
       const ownerIds = new Map<string, number>();
-      const findOwner = db.prepare('SELECT id FROM owners WHERE name = ? COLLATE NOCASE');
-      const insOwner = db.prepare('INSERT INTO owners (name, phone, city) VALUES (?, ?, ?)');
-      const insTractor = db.prepare(
-        `INSERT INTO tractors (sequential_number, owner_id, brand, model, year, serial_number, current_hours, hours_read_at,
-           oil_spec, oil_capacity_liters, interval_hours, interval_months, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Importado de planilha')`,
-      );
-      const insReading = db.prepare('INSERT INTO hour_readings (tractor_id, hours, read_at, created_by) VALUES (?, ?, ?, ?)');
       for (const row of parsed) {
         const key = row.owner.toLowerCase();
         let ownerId = ownerIds.get(key);
         if (!ownerId) {
-          const found = findOwner.get(row.owner) as { id: number } | undefined;
+          const found = await tx.get<{ id: number }>('SELECT id FROM owners WHERE name = ? COLLATE NOCASE', row.owner);
           if (found) ownerId = found.id;
-          else { ownerId = Number(insOwner.run(row.owner, row.phone, row.city).lastInsertRowid); created.owners++; }
+          else {
+            ownerId = (await tx.run('INSERT INTO owners (name, phone, city) VALUES (?, ?, ?)', row.owner, row.phone, row.city)).lastInsertRowid;
+            created.owners++;
+          }
           ownerIds.set(key, ownerId);
         }
-        const tractorId = Number(
-          insTractor.run(nextTractorNumber(db), ownerId, row.brand, row.model, row.year, row.serial, row.hours, row.readAt,
-            row.oil, row.liters, row.intH, row.intM).lastInsertRowid,
-        );
+        const tractorId = (await tx.run(
+          `INSERT INTO tractors (sequential_number, owner_id, brand, model, year, serial_number, current_hours, hours_read_at,
+             oil_spec, oil_capacity_liters, interval_hours, interval_months, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Importado de planilha')`,
+          await nextTractorNumber(tx), ownerId, row.brand, row.model, row.year, row.serial, row.hours, row.readAt,
+          row.oil, row.liters, row.intH, row.intM,
+        )).lastInsertRowid;
         created.tractors++;
-        if (row.hours != null) insReading.run(tractorId, row.hours, row.readAt!, user.id);
+        if (row.hours != null) {
+          await tx.run('INSERT INTO hour_readings (tractor_id, hours, read_at, created_by) VALUES (?, ?, ?, ?)', tractorId, row.hours, row.readAt, user.id);
+        }
       }
     });
   });

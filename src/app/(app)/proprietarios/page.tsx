@@ -10,7 +10,7 @@ export default async function Proprietarios({ searchParams }: { searchParams: Se
   const sp = await searchParams;
   const q = one(sp.q).trim();
   const inativos = one(sp.inativos) === '1';
-  const owners = listOwners({ q, includeInactive: inativos });
+  const owners = await listOwners({ q, includeInactive: inativos });
   return (
     <>
       <Flash ok={one(sp.ok)} erro={one(sp.erro)} />

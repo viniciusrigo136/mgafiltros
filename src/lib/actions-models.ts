@@ -1,8 +1,8 @@
 'use server';
 // Modelos de trator (templates).
-import { getDb, transaction } from './db';
+import { transaction } from './db';
 import { requireAdmin, requireEditor } from './auth';
-import { number, text } from './validate';
+import { ValidationError, number, text } from './validate';
 import { done, guard, guardRedirect, readFilterRows, replaceFilters, type ActionState } from './action-utils';
 
 export async function saveModel(_: ActionState, fd: FormData): Promise<ActionState> {
@@ -17,22 +17,21 @@ export async function saveModel(_: ActionState, fd: FormData): Promise<ActionSta
     const intMonths = number(fd, 'interval_months', 'Intervalo em meses', { integer: true, positive: true, max: 120 });
     const notes = text(fd, 'notes', 'Observações', { max: 2000 });
     const filters = readFilterRows(fd);
-    const db = getDb();
-    transaction(db, () => {
+    await transaction(async (tx) => {
       if (modelId) {
-        db.prepare(
+        await tx.run(
           `UPDATE tractor_models SET brand = ?, model = ?, oil_spec = ?, oil_capacity_liters = ?, interval_hours = ?, interval_months = ?, notes = ?
            WHERE id = ?`,
-        ).run(brand, model, oilSpec, oilCap, intHours, intMonths, notes, modelId);
-      } else {
-        modelId = Number(
-          db.prepare(
-            `INSERT INTO tractor_models (brand, model, oil_spec, oil_capacity_liters, interval_hours, interval_months, notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          ).run(brand, model, oilSpec, oilCap, intHours, intMonths, notes).lastInsertRowid,
+          brand, model, oilSpec, oilCap, intHours, intMonths, notes, modelId,
         );
+      } else {
+        modelId = (await tx.run(
+          `INSERT INTO tractor_models (brand, model, oil_spec, oil_capacity_liters, interval_hours, interval_months, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          brand, model, oilSpec, oilCap, intHours, intMonths, notes,
+        )).lastInsertRowid;
       }
-      replaceFilters(db, 'tractor_model_filters', modelId, filters);
+      await replaceFilters(tx, 'tractor_model_filters', modelId, filters);
     });
   });
   if (r) return r;
@@ -45,26 +44,27 @@ export async function modelFromTractor(fd: FormData) {
   let modelId = 0;
   await guardRedirect(`/tratores/${tractorId}`, async () => {
     await requireEditor();
-    const db = getDb();
-    const t = db.prepare('SELECT * FROM tractors WHERE id = ?').get(tractorId) as {
-      brand: string; model: string; oil_spec: string | null; oil_capacity_liters: number | null;
-      interval_hours: number | null; interval_months: number | null;
-    };
-    transaction(db, () => {
-      modelId = Number(
-        (db.prepare(
-          `INSERT INTO tractor_models (brand, model, oil_spec, oil_capacity_liters, interval_hours, interval_months)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT (brand COLLATE NOCASE, model COLLATE NOCASE) DO UPDATE SET oil_spec = excluded.oil_spec, oil_capacity_liters = excluded.oil_capacity_liters,
-             interval_hours = excluded.interval_hours, interval_months = excluded.interval_months
-           RETURNING id`,
-        ).get(t.brand, t.model, t.oil_spec, t.oil_capacity_liters, t.interval_hours, t.interval_months) as { id: number }).id,
+    await transaction(async (tx) => {
+      const t = await tx.get<{
+        brand: string; model: string; oil_spec: string | null; oil_capacity_liters: number | null;
+        interval_hours: number | null; interval_months: number | null;
+      }>('SELECT * FROM tractors WHERE id = ?', tractorId);
+      if (!t) throw new ValidationError('Trator não encontrado.');
+      const row = await tx.get<{ id: number }>(
+        `INSERT INTO tractor_models (brand, model, oil_spec, oil_capacity_liters, interval_hours, interval_months)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (brand COLLATE NOCASE, model COLLATE NOCASE) DO UPDATE SET oil_spec = excluded.oil_spec,
+           oil_capacity_liters = excluded.oil_capacity_liters, interval_hours = excluded.interval_hours, interval_months = excluded.interval_months
+         RETURNING id`,
+        t.brand, t.model, t.oil_spec, t.oil_capacity_liters, t.interval_hours, t.interval_months,
       );
-      db.prepare('DELETE FROM tractor_model_filters WHERE model_id = ?').run(modelId);
-      db.prepare(
+      modelId = row!.id;
+      await tx.run('DELETE FROM tractor_model_filters WHERE model_id = ?', modelId);
+      await tx.run(
         `INSERT INTO tractor_model_filters (model_id, filter_type, reference_code, manufacturer, quantity, notes)
          SELECT ?, filter_type, reference_code, manufacturer, quantity, notes FROM tractor_filters WHERE tractor_id = ?`,
-      ).run(modelId, tractorId);
+        modelId, tractorId,
+      );
     });
   });
   done(`/modelos/${modelId}`, 'Modelo salvo a partir do trator. Revise os dados.');
@@ -74,7 +74,10 @@ export async function deleteModel(fd: FormData) {
   const modelId = Number(fd.get('id'));
   await guardRedirect(`/modelos/${modelId}`, async () => {
     await requireAdmin();
-    getDb().prepare('DELETE FROM tractor_models WHERE id = ?').run(modelId);
+    await transaction(async (tx) => {
+      await tx.run('DELETE FROM tractor_model_filters WHERE model_id = ?', modelId);
+      await tx.run('DELETE FROM tractor_models WHERE id = ?', modelId);
+    });
   });
   done('/modelos', 'Modelo excluído (tratores já cadastrados não mudam).');
 }

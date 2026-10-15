@@ -22,7 +22,7 @@ export interface StockItem {
 
 const BALANCE = '(SELECT coalesce(sum(delta), 0) FROM stock_movements m WHERE m.item_id = s.id)';
 
-export function listStock(opts: { q?: string; kind?: string; low?: boolean; includeInactive?: boolean } = {}): StockItem[] {
+export async function listStock(opts: { q?: string; kind?: string; low?: boolean; includeInactive?: boolean } = {}): Promise<StockItem[]> {
   const where: string[] = [];
   const params: string[] = [];
   if (!opts.includeInactive) where.push('s.is_active = 1');
@@ -33,22 +33,22 @@ export function listStock(opts: { q?: string; kind?: string; low?: boolean; incl
     params.push(like, like, like, like);
   }
   if (opts.low) where.push(`${BALANCE} <= s.min_quantity`);
-  return getDb()
-    .prepare(
-      `SELECT s.*, ${BALANCE} AS balance FROM stock_items s ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY s.kind, s.reference_code COLLATE NOCASE`,
-    )
-    .all(...params) as unknown as StockItem[];
+  return (await getDb()).all<StockItem>(
+    `SELECT s.*, ${BALANCE} AS balance FROM stock_items s ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY s.kind, s.reference_code COLLATE NOCASE`,
+    ...params,
+  );
 }
 
-export function getStockItem(id: number): StockItem | null {
-  return (getDb().prepare(`SELECT s.*, ${BALANCE} AS balance FROM stock_items s WHERE s.id = ?`).get(id) as unknown as StockItem | undefined) ?? null;
+export async function getStockItem(id: number): Promise<StockItem | null> {
+  return (await (await getDb()).get<StockItem>(`SELECT s.*, ${BALANCE} AS balance FROM stock_items s WHERE s.id = ?`, id)) ?? null;
 }
 
-export function lowStockCount(): number {
-  return (getDb()
-    .prepare(`SELECT count(*) AS n FROM stock_items s WHERE s.is_active = 1 AND s.min_quantity > 0 AND ${BALANCE} <= s.min_quantity`)
-    .get() as { n: number }).n;
+export async function lowStockCount(): Promise<number> {
+  const row = await (await getDb()).get<{ n: number }>(
+    `SELECT count(*) AS n FROM stock_items s WHERE s.is_active = 1 AND s.min_quantity > 0 AND ${BALANCE} <= s.min_quantity`,
+  );
+  return row?.n ?? 0;
 }
 
 export interface Movement {
@@ -62,31 +62,29 @@ export interface Movement {
   work_order_number: number | null;
 }
 
-export function listMovements(itemId: number, limit = 50): Movement[] {
-  return getDb()
-    .prepare(
-      `SELECT m.id, m.delta, m.reason, m.created_at, m.oil_change_id,
-              coalesce(oc.tractor_id, wo.tractor_id) AS tractor_id, wo.id AS work_order_id, wo.number AS work_order_number
-       FROM stock_movements m
-       LEFT JOIN oil_changes oc ON oc.id = m.oil_change_id
-       LEFT JOIN work_order_items wi ON wi.id = m.work_order_item_id
-       LEFT JOIN work_orders wo ON wo.id = wi.work_order_id
-       WHERE m.item_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
-    )
-    .all(itemId, limit) as unknown as Movement[];
+export async function listMovements(itemId: number, limit = 50): Promise<Movement[]> {
+  return (await getDb()).all<Movement>(
+    `SELECT m.id, m.delta, m.reason, m.created_at, m.oil_change_id,
+            coalesce(oc.tractor_id, wo.tractor_id) AS tractor_id, wo.id AS work_order_id, wo.number AS work_order_number
+     FROM stock_movements m
+     LEFT JOIN oil_changes oc ON oc.id = m.oil_change_id
+     LEFT JOIN work_order_items wi ON wi.id = m.work_order_item_id
+     LEFT JOIN work_orders wo ON wo.id = wi.work_order_id
+     WHERE m.item_id = ? ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+    itemId, limit,
+  );
 }
 
 /** Saldo por código de referência (sem diferenciar maiúsculas). */
-export function balancesByCode(codes: string[]): Map<string, { id: number; balance: number; unit: string }> {
+export async function balancesByCode(codes: string[]): Promise<Map<string, { id: number; balance: number; unit: string }>> {
   const map = new Map<string, { id: number; balance: number; unit: string }>();
   const unique = [...new Set(codes.filter(Boolean))];
   if (!unique.length) return map;
-  const rows = getDb()
-    .prepare(
-      `SELECT s.id, s.reference_code, s.unit, ${BALANCE} AS balance FROM stock_items s
-       WHERE s.is_active = 1 AND s.reference_code IN (${unique.map(() => '?').join(',')})`,
-    )
-    .all(...unique) as { id: number; reference_code: string; unit: string; balance: number }[];
+  const rows = await (await getDb()).all<{ id: number; reference_code: string; unit: string; balance: number }>(
+    `SELECT s.id, s.reference_code, s.unit, ${BALANCE} AS balance FROM stock_items s
+     WHERE s.is_active = 1 AND s.reference_code IN (${unique.map(() => '?').join(',')})`,
+    ...unique,
+  );
   for (const r of rows) map.set(r.reference_code.toLowerCase(), { id: r.id, balance: r.balance, unit: r.unit });
   return map;
 }
@@ -94,16 +92,16 @@ export function balancesByCode(codes: string[]): Map<string, { id: number; balan
 export interface PartNeed { label: string; code: string; needed: number; balance: number | null; unit: string; ok: boolean; itemId: number | null }
 
 /** Peças necessárias para a próxima troca de óleo e disponibilidade no estoque. */
-export function partsForNextChange(
+export async function partsForNextChange(
   filters: { filter_type: string; reference_code: string; quantity: number }[],
   oil: { spec: string | null; liters: number | null },
   typeLabel: (t: string) => string,
-): PartNeed[] {
+): Promise<PartNeed[]> {
   const needs: Omit<PartNeed, 'balance' | 'ok' | 'itemId' | 'unit'>[] = filters.map((f) => ({
     label: `Filtro ${typeLabel(f.filter_type).toLowerCase()}`, code: f.reference_code, needed: f.quantity,
   }));
   if (oil.spec) needs.push({ label: 'Óleo do motor', code: oil.spec, needed: oil.liters ?? 0 });
-  const balances = balancesByCode(needs.map((n) => n.code));
+  const balances = await balancesByCode(needs.map((n) => n.code));
   return needs.map((n) => {
     const b = balances.get(n.code.toLowerCase());
     return { ...n, balance: b?.balance ?? null, unit: b?.unit ?? '', itemId: b?.id ?? null, ok: b != null && b.balance >= n.needed };

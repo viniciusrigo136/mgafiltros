@@ -11,12 +11,9 @@ import { Empty, Flash, NotifyLink, ReadingInfo, StatusBadge, one, statusReason, 
 const ORDER: MaintenanceStatus[] = ['vencida', 'proxima', 'em_dia', 'sem_dados'];
 
 export default async function Painel({ searchParams }: { searchParams: SearchParams }) {
-  const sp = await searchParams;
-  const { counts, attention, total, upcoming } = dashboard();
-  const plans = planAlerts();
-  const settings = getSettings();
-  const lowStock = lowStockCount();
-  const openOrders = openOrdersCount();
+  const [sp, { counts, attention, total, upcoming }, plans, settings, lowStock, openOrders] = await Promise.all([
+    searchParams, dashboard(), planAlerts(), getSettings(), lowStockCount(), openOrdersCount(),
+  ]);
   const notFound = one(sp.nao_encontrado);
   const horizon = addDays(todayInTimeZone(), 30);
 

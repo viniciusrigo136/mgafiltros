@@ -21,9 +21,7 @@ export const getCurrentUser = cache(async (): Promise<User | null> => {
   if (!loginEnabled) return ANONYMOUS;
   const userId = readSessionToken(store.get(SESSION_COOKIE)?.value);
   if (!userId) return null;
-  const user = getDb()
-    .prepare('SELECT id, username, name, role FROM users WHERE id = ? AND is_active = 1')
-    .get(userId) as User | undefined;
+  const user = await (await getDb()).get<User>('SELECT id, username, name, role FROM users WHERE id = ? AND is_active = 1', userId);
   return user ?? null;
 });
 

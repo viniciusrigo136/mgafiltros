@@ -28,12 +28,12 @@ const STEP_LABEL: Partial<Record<WoStatus, string>> = {
 
 export default async function Ordem({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
   const [{ id }, sp, user] = await Promise.all([params, searchParams, requireUser()]);
-  const data = getOrder(Number(id));
+  const data = await getOrder(Number(id));
   if (!data) notFound();
   const { order: o, items, checklist, totals } = data;
   const editable = canEdit(user) && o.status !== 'cancelada';
-  const stock = editable ? listStock() : [];
-  const attachments = listAttachments({ workOrderId: o.id });
+  const stock = editable ? await listStock() : [];
+  const attachments = await listAttachments({ workOrderId: o.id });
   const reverting = o.status === 'concluida';
 
   return (
