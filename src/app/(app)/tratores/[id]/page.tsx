@@ -18,6 +18,7 @@ import { Attachments } from '@/components/Attachments';
 import { ConfirmButton } from '@/components/ConfirmButton';
 import { CopyButton } from '@/components/CopyButton';
 import { OilChangeList } from '@/components/OilChangeList';
+import { TractorCatalog } from '@/components/TractorCatalog';
 import { Empty, Flash, NotifyLink, OrderBadge, ReadingInfo, StatusBadge, one, statusReason, type SearchParams } from '@/components/ui';
 
 export default async function Trator({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
@@ -183,6 +184,14 @@ export default async function Trator({ params, searchParams }: { params: Promise
           {parts.some((p) => !p.ok) && <p className="alert alert-warn" style={{ marginTop: '.75rem' }}>Há peças em falta ou sem cadastro no estoque.</p>}
         </section>
       </div>
+
+      <TractorCatalog
+        tractor={t}
+        editable={editable}
+        userName={user.name}
+        system={one(sp.sistema_cat)}
+        state={one(sp.situacao_cat)}
+      />
 
       <section className="card" id="outras">
         <h2>Outras manutenções</h2>

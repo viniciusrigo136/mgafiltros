@@ -12,6 +12,8 @@ export interface Db {
   all<T>(sql: string, ...args: Arg[]): Promise<T[]>;
   get<T>(sql: string, ...args: Arg[]): Promise<T | undefined>;
   run(sql: string, ...args: Arg[]): Promise<{ lastInsertRowid: number; changes: number }>;
+  /** Vários comandos de uma vez (uma ida ao banco), tudo ou nada. */
+  batch(statements: { sql: string; args: Arg[] }[]): Promise<void>;
 }
 
 const g = globalThis as unknown as { __mgaClient?: Promise<Client> };
@@ -75,6 +77,13 @@ function wrap(exec: Client | Transaction): Db {
     async run(sql: string, ...args: Arg[]) {
       const rs = await query(sql, args);
       return { lastInsertRowid: Number(rs.lastInsertRowid ?? 0), changes: rs.rowsAffected };
+    },
+    async batch(statements) {
+      if (!statements.length) return;
+      const stmts = statements.map((s) => ({ sql: s.sql, args: s.args.map((a) => (a === undefined ? null : a)) }));
+      // Fora de transação o batch é atômico ('write'); dentro, segue a transação em curso.
+      if ('commit' in exec) await exec.batch(stmts);
+      else await exec.batch(stmts, 'write');
     },
   };
 }

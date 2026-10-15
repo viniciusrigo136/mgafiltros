@@ -27,6 +27,9 @@ export default async function Configuracoes({ searchParams }: { searchParams: Se
         <Link className="card item" href="/configuracoes/importar">
           <span className="item-body"><span className="item-title">Importar planilha</span><span className="item-sub">Proprietários e tratores a partir de CSV</span></span>
         </Link>
+        <Link className="card item" href="/configuracoes/catalogo">
+          <span className="item-body"><span className="item-title">Importar catálogo de filtros</span><span className="item-sub">Marcas, modelos e aplicações (JSON/CSV) com pré-visualização</span></span>
+        </Link>
         <Link className="card item" href="/configuracoes/usuarios">
           <span className="item-body"><span className="item-title">Usuários e acesso</span><span className="item-sub">{loginEnabled ? 'Login ativo' : 'Login desligado'}</span></span>
         </Link>

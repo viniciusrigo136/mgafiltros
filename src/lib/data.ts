@@ -36,6 +36,8 @@ export interface Tractor {
   interval_months: number | null;
   notes: string | null;
   is_active: number;
+  /** Modelo do catálogo de filtros vinculado (opcional). */
+  catalog_model_id: string | null;
   last_change_date: string | null;
   last_change_hours: number | null;
 }

@@ -284,4 +284,89 @@ CREATE INDEX idx_attachments_tractor ON attachments (tractor_id);
 CREATE INDEX idx_attachments_wo ON attachments (work_order_id);
 `,
   },
+  {
+    name: '003_catalogo_filtros.sql',
+    sql: `
+-- 003: catálogo técnico de filtros (marca > modelo > aplicação) e confirmações por trator.
+-- origin = 'oficina' marca registros criados/editados pela oficina: a importação nunca os sobrescreve.
+-- Códigos de filtro são TEXTO (preserva espaços, barras, zeros e letras).
+
+CREATE TABLE catalog_brands (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL CHECK (length(trim(name)) > 0),
+  coverage   TEXT,
+  origin     TEXT NOT NULL DEFAULT 'importado' CHECK (origin IN ('importado', 'oficina')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE UNIQUE INDEX idx_catalog_brands_name ON catalog_brands (name COLLATE NOCASE);
+
+CREATE TABLE catalog_models (
+  id             TEXT PRIMARY KEY,
+  brand_id       TEXT NOT NULL REFERENCES catalog_brands (id),
+  model          TEXT NOT NULL CHECK (length(trim(model)) > 0),
+  engine_ref     TEXT,
+  catalog_status TEXT,
+  notes          TEXT,
+  origin         TEXT NOT NULL DEFAULT 'importado' CHECK (origin IN ('importado', 'oficina')),
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX idx_catalog_models_brand ON catalog_models (brand_id);
+CREATE INDEX idx_catalog_models_model ON catalog_models (model COLLATE NOCASE);
+
+CREATE TABLE catalog_applications (
+  id                  TEXT PRIMARY KEY,
+  model_id            TEXT NOT NULL REFERENCES catalog_models (id),
+  system              TEXT NOT NULL CHECK (length(trim(system)) > 0),
+  position            TEXT,
+  filter_brand        TEXT,
+  filter_code         TEXT NOT NULL CHECK (length(trim(filter_code)) > 0),
+  original_code       TEXT,
+  version_condition   TEXT,
+  quantity            INTEGER CHECK (quantity IS NULL OR quantity > 0),
+  verification_status TEXT NOT NULL DEFAULT 'catalogo_aplicacao_geral'
+                      CHECK (verification_status IN ('catalogo_aplicacao_geral', 'pendente', 'verificado_oficina')),
+  source_url          TEXT,
+  notes               TEXT,
+  origin              TEXT NOT NULL DEFAULT 'importado' CHECK (origin IN ('importado', 'oficina')),
+  is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX idx_catalog_apps_model ON catalog_applications (model_id, system);
+CREATE INDEX idx_catalog_apps_code ON catalog_applications (filter_code COLLATE NOCASE);
+
+-- Histórico: estado anterior de cada aplicação antes de uma edição (nada é apagado).
+CREATE TABLE catalog_application_history (
+  id             INTEGER PRIMARY KEY,
+  application_id TEXT NOT NULL,
+  snapshot       TEXT NOT NULL,
+  changed_by     TEXT,
+  changed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX idx_catalog_history_app ON catalog_application_history (application_id);
+
+ALTER TABLE tractors ADD COLUMN catalog_model_id TEXT REFERENCES catalog_models (id);
+
+-- Confirmação da aplicação real em UM trator. Registro só de inclusão: o estado atual é o mais recente.
+-- Não altera o catálogo global nem outros tratores.
+CREATE TABLE tractor_filter_confirmations (
+  id                INTEGER PRIMARY KEY,
+  tractor_id        INTEGER NOT NULL REFERENCES tractors (id),
+  application_id    TEXT REFERENCES catalog_applications (id),
+  status            TEXT NOT NULL CHECK (status IN ('confirmado', 'descartado', 'candidato')),
+  system            TEXT NOT NULL,
+  filter_brand      TEXT,
+  filter_code       TEXT NOT NULL,
+  version_condition TEXT,
+  notes             TEXT,
+  confirmed_on      TEXT NOT NULL CHECK (date(confirmed_on) = confirmed_on),
+  responsible       TEXT,
+  created_by        INTEGER REFERENCES users (id),
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX idx_tfc_tractor ON tractor_filter_confirmations (tractor_id, application_id, id DESC);
+`,
+  },
 ];

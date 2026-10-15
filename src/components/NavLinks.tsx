@@ -7,6 +7,7 @@ const LINKS = [
   { href: '/proprietarios', label: 'Proprietários' },
   { href: '/tratores', label: 'Tratores' },
   { href: '/manutencoes', label: 'Manutenções' },
+  { href: '/catalogo', label: 'Catálogo' },
   { href: '/ordens', label: 'Ordens de serviço' },
   { href: '/estoque', label: 'Estoque' },
   { href: '/relatorios', label: 'Relatórios' },
